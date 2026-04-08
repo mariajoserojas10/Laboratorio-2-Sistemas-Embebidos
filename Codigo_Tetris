@@ -1,0 +1,266 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/gpio.h"
+#include "esp_timer.h"
+#include "esp_rom_sys.h"
+
+// Botones
+#define BTN_IZQ 32
+#define BTN_DER 34
+#define BTN_ROT 35
+
+// Matriz 6x6
+int filas[6] = {12,14,27,26,25,33};
+int col_rojo[6]  = {5,19,23,17,15,4};
+int col_verde[6] = {13,18,21,2,22,16};
+
+int tablero[6][6] = {0};
+
+int pieza[3][2];
+int bloques = 3;
+
+// Estado botones
+int last_izq = 1;
+int last_der = 1;
+int last_rot = 1;
+
+void init_gpio()
+{
+    for(int i=0;i<6;i++){
+        gpio_set_direction(filas[i], GPIO_MODE_OUTPUT);
+        gpio_set_direction(col_rojo[i], GPIO_MODE_OUTPUT);
+        gpio_set_direction(col_verde[i], GPIO_MODE_OUTPUT);
+    }
+
+    gpio_set_direction(BTN_IZQ, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(BTN_IZQ, GPIO_PULLUP_ONLY);
+
+    gpio_set_direction(BTN_DER, GPIO_MODE_INPUT);
+    gpio_set_direction(BTN_ROT, GPIO_MODE_INPUT);
+}
+
+void nueva_pieza()
+{
+    int tipo = rand()%4;
+    int x = 2;
+
+    if(tipo==0){ // Vertical
+        bloques=3;
+        pieza[0][0]=x; pieza[0][1]=0;
+        pieza[1][0]=x; pieza[1][1]=1;
+        pieza[2][0]=x; pieza[2][1]=2;
+    }
+    else if(tipo==1){ // Horizontal
+        bloques=3;
+        pieza[0][0]=x-1; pieza[0][1]=0;
+        pieza[1][0]=x;   pieza[1][1]=0;
+        pieza[2][0]=x+1; pieza[2][1]=0;
+    }
+    else if(tipo==2){ // L
+        bloques=3;
+        pieza[0][0]=x; pieza[0][1]=0;
+        pieza[1][0]=x; pieza[1][1]=1;
+        pieza[2][0]=x+1; pieza[2][1]=1;
+    }
+    else{ // Pieza de 2
+        bloques=2;
+        pieza[0][0]=x; pieza[0][1]=0;
+        pieza[1][0]=x+1; pieza[1][1]=0;
+    }
+}
+
+void limpiar_filas()
+{
+    for(int f=0;f<6;f++){
+        int llena=1;
+
+        for(int c=0;c<6;c++){
+            if(!tablero[f][c]) llena=0;
+        }
+
+        if(llena){
+            for(int y=f;y>0;y--)
+                for(int c=0;c<6;c++)
+                    tablero[y][c]=tablero[y-1][c];
+
+            for(int c=0;c<6;c++)
+                tablero[0][c]=0;
+        }
+    }
+}
+
+// Rotación de las piezas
+void rotar()
+{
+    int temp[3][2];
+
+    int x0 = pieza[0][0];
+    int y0 = pieza[0][1];
+
+    int puede = 1;
+
+    for(int i=0;i<bloques;i++){
+        int dx = pieza[i][0]-x0;
+        int dy = pieza[i][1]-y0;
+
+        temp[i][0] = x0 - dy;
+        temp[i][1] = y0 + dx;
+
+        int x = temp[i][0];
+        int y = temp[i][1];
+
+        if(x<0 || x>=6 || y>=6) puede = 0;
+        else if(y>=0 && tablero[y][x]) puede = 0;
+    }
+
+    if(puede){
+        for(int i=0;i<bloques;i++){
+            pieza[i][0]=temp[i][0];
+            pieza[i][1]=temp[i][1];
+        }
+    }
+}
+
+void game_over()
+{
+    for(int f=0;f<6;f++){
+        for(int c=0;c<6;c++)
+            tablero[f][c]=0;
+
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
+}
+
+void mostrar()
+{
+    for(int f=0;f<6;f++)
+    {
+        for(int i=0;i<6;i++) gpio_set_level(filas[i],0);
+
+        for(int c=0;c<6;c++){
+            gpio_set_level(col_rojo[c], tablero[f][c]);
+            gpio_set_level(col_verde[c], 0);
+        }
+
+        for(int i=0;i<bloques;i++){
+            if(pieza[i][1]==f)
+                gpio_set_level(col_verde[pieza[i][0]],1);
+        }
+
+        gpio_set_level(filas[f],1);
+        esp_rom_delay_us(4000); 
+    }
+}
+
+void app_main()
+{
+    init_gpio();
+
+    srand(esp_timer_get_time()); 
+
+    nueva_pieza();
+
+    int64_t last = esp_timer_get_time();
+
+    while(1)
+    {
+        mostrar();
+
+        int izq = gpio_get_level(BTN_IZQ);
+        int der = gpio_get_level(BTN_DER);
+        int rot = gpio_get_level(BTN_ROT);
+
+        // Izquierda
+        if(izq==0 && last_izq==1){
+            int puede=1;
+
+            for(int i=0;i<bloques;i++){
+                int nx = pieza[i][0]-1;
+                int ny = pieza[i][1];
+
+                if(nx<0) puede=0;
+                else if(ny>=0 && tablero[ny][nx]) puede=0;
+            }
+
+            if(puede){
+                for(int i=0;i<bloques;i++)
+                    pieza[i][0]--;
+            }
+        }
+
+        // Derecha
+        if(der==0 && last_der==1){
+            int puede=1;
+
+            for(int i=0;i<bloques;i++){
+                int nx = pieza[i][0]+1;
+                int ny = pieza[i][1];
+
+                if(nx>=6) puede=0;
+                else if(ny>=0 && tablero[ny][nx]) puede=0;
+            }
+
+            if(puede){
+                for(int i=0;i<bloques;i++)
+                    pieza[i][0]++;
+            }
+        }
+
+        // Rotar
+        if(rot==0 && last_rot==1){
+            rotar();
+            vTaskDelay(pdMS_TO_TICKS(200));
+        }
+
+        last_izq=izq;
+        last_der=der;
+        last_rot=rot;
+
+        // Caída de las figuras
+        if(esp_timer_get_time() - last > 2500000)
+        {
+            last = esp_timer_get_time();
+
+            int temp[3][2];
+            int puede=1;
+
+            for(int i=0;i<bloques;i++){
+                temp[i][0]=pieza[i][0];
+                temp[i][1]=pieza[i][1]+1;
+
+                int x=temp[i][0];
+                int y=temp[i][1];
+
+                if(y>=6) puede=0;
+                else if(y>=0 && tablero[y][x]) puede=0;
+            }
+
+            if(puede){
+                for(int i=0;i<bloques;i++)
+                    pieza[i][1]++;
+            }
+            else{
+                // Fijar la pieza
+                for(int i=0;i<bloques;i++){
+                    int x=pieza[i][0];
+                    int y=pieza[i][1];
+                    if(y>=0) tablero[y][x]=1;
+                }
+
+                limpiar_filas();
+
+                // Reinicio
+                for(int c=0;c<6;c++){
+                    if(tablero[0][c]){
+                        game_over();
+                        break;
+                    }
+                }
+
+                nueva_pieza();
+            }
+        }
+    }
+}
